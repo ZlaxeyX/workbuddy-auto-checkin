@@ -1,0 +1,13 @@
+# 默认按内容自动识别文本，仓库内统一用 LF
+* text=auto eol=lf
+
+# Windows 专属脚本：检出时用 CRLF，避免 cmd.exe / PowerShell 解析异常
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.exe  binary

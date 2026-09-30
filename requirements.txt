@@ -1,0 +1,6 @@
+# 本项目零第三方依赖，仅使用 Python 标准库（urllib / json / ctypes / winreg / subprocess ...）。
+# 因此本文件为空占位，pip install -r requirements.txt 会直接成功。
+#
+# 若你使用虚拟环境，可按需自行添加工具链（可选）：
+# ruff>=0.6        # 代码检查
+# mypy>=1.11       # 类型检查

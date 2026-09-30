@@ -1,0 +1,64 @@
+{
+  "_comment": [
+    "WorkBuddy 每日积分自动领取 —— 配置模板。",
+    "首次运行 checkin.py 时会自动复制本文件为 config.json。",
+    "config.json 已在 .gitignore 中，不会被提交（因为里面要放 access_token）。",
+    "所有键都有内置默认值，删掉任意一行也能正常工作。"
+  ],
+
+  "mode": "auto",
+
+  "auth": {
+    "_comment": "token 模式需要 access_token；留空则自动降级为 client 模式（复用桌面端登录态）",
+    "access_token": "",
+    "user_id": "",
+    "token_file": "token.txt",
+    "env_token_var": "WB_ACCESS_TOKEN",
+    "env_user_var": "WB_USER_ID"
+  },
+
+  "api": {
+    "_comment": "官方签到接口。一般无需修改。",
+    "base_url": "https://copilot.tencent.com",
+    "status_path": "/billing/meter/checkin-status",
+    "claim_path": "/billing/meter/daily-checkin",
+    "timeout_seconds": 20,
+    "verify_tls": true
+  },
+
+  "client": {
+    "_comment": "client 模式参数。exe_path 留空会自动探测（运行中进程 > 注册表 > 常见目录扫描）",
+    "exe_path": "",
+    "process_name": "WorkBuddy",
+    "auto_launch": true,
+    "focus_window": true,
+    "ready_timeout_seconds": 90,
+    "log_dir": "",
+    "log_files": ["main.log", "main.old.log"],
+    "log_tail_bytes": 8000000
+  },
+
+  "retry": {
+    "max_attempts": 3,
+    "initial_backoff_seconds": 5,
+    "backoff_multiplier": 2.0,
+    "max_backoff_seconds": 120
+  },
+
+  "logging": {
+    "log_dir": "logs",
+    "level": "INFO",
+    "keep_days": 60
+  },
+
+  "state": {
+    "state_dir": "state"
+  },
+
+  "notify": {
+    "_comment": "client 模式未能自动完成签到时的提醒方式",
+    "enabled": true,
+    "on_success": false,
+    "on_failure": true
+  }
+}

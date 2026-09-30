@@ -1,0 +1,37 @@
+# ── 凭据：绝对不要提交 ──────────────────────────────────
+config.json
+token.txt
+*.token
+.env
+.env.*
+
+# ── 运行时产物 ─────────────────────────────────────────
+logs/
+state/
+
+# ── Python ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── 编辑器 / 系统 ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 本地 agent 数据（含本机路径与账号标识，勿提交） ────────
+.workbuddy/
+
+# ── 临时文件 ───────────────────────────────────────────
+*.tmp
+*.bak
