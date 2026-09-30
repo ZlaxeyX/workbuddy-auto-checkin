@@ -114,7 +114,7 @@ token 模式                 client 模式
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/<your-name>/workbuddy-auto-checkin.git
+git clone https://github.com/ZlaxeyX/workbuddy-auto-checkin.git
 cd workbuddy-auto-checkin
 ```
 
