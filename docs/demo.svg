@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300" role="img">
+<title>WorkBuddy 每日积分自动领取 · 环境体检输出</title>
+<desc>终端窗口中展示 python checkin.py --discover 的真实输出。</desc>
+
+<rect x="0" y="0" width="760" height="300" rx="10" fill="#1E1E1E"/>
+<path d="M0 10a10 10 0 0 1 10-10h740a10 10 0 0 1 10 10v24H0z" fill="#2D2D30"/>
+<circle cx="22" cy="17" r="6" fill="#FF5F57"/>
+<circle cx="42" cy="17" r="6" fill="#FEBC2E"/>
+<circle cx="62" cy="17" r="6" fill="#28C840"/>
+<text x="380" y="22" text-anchor="middle" fill="#9A9A9E" font-family="Consolas, 'Cascadia Mono', Menlo, monospace" font-size="12">PowerShell</text>
+
+<g font-family="Consolas, 'Cascadia Mono', Menlo, monospace" font-size="13">
+<text x="26" y="66" fill="#569CD6">PS C:\WorkBuddy&gt; <tspan fill="#D4D4D4">python checkin.py --discover</tspan></text>
+
+<text x="26" y="102" fill="#4EC9B0">  [OK] <tspan fill="#D4D4D4">客户端程序    WorkBuddy.exe（来源: 运行中的进程）</tspan></text>
+<text x="26" y="126" fill="#4EC9B0">  [OK] <tspan fill="#D4D4D4">今日签到      已完成（连签 1 天）</tspan></text>
+<text x="26" y="150" fill="#6A9955">       证据: <tspan fill="#8A8A8E">10:56:56 领取成功 +100 分（连签 1 天）</tspan></text>
+<text x="26" y="174" fill="#4EC9B0">  [OK] <tspan fill="#D4D4D4">配置时间      主签到每天 10:00，补签每天 21:00</tspan></text>
+<text x="26" y="198" fill="#4EC9B0">  [OK] <tspan fill="#D4D4D4">计划任务      WorkBuddy每日积分-主签到  每天 10:00</tspan></text>
+
+<text x="26" y="240" fill="#9CDCFE">结论：环境就绪，当前以 client 模式运行。</text>
+<text x="26" y="264" fill="#8A8A8E">      想彻底免点击，填上 access_token 即可切换全自动。</text>
+</g>
+</svg>

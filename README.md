@@ -1,5 +1,11 @@
 # WorkBuddy 每日积分自动领取
 
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
+![Python](https://img.shields.io/badge/python-3.9%2B-3776AB)
+![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+![Scheduled Task](https://img.shields.io/badge/默认-每天%2010%3A00-0F6E56)
+
 > 每天自动拿到 WorkBuddy「Buddy 加油站」的 **100 积分**（连签第 7 天额外 **+1000**），不用再惦记着手动点。
 
 纯 Python 标准库实现，**零第三方依赖**；配套 Windows 计划任务注册脚本，装一次长期生效。
@@ -8,6 +14,8 @@
 - 不碰密码：默认模式完全复用桌面端已登录态，脚本不读取、不解密、不保存任何凭据
 - 不怕重跑：三层幂等保护，补签任务不会重复领积分
 - 可核验：从客户端日志解析签到证据，成功/失败都有明确退出码
+
+<img src="docs/demo.svg" alt="checkin.py --discover 的环境体检输出" width="760">
 
 ---
 
