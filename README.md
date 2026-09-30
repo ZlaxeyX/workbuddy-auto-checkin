@@ -19,6 +19,7 @@
 - [环境要求](#环境要求)
 - [安装](#安装)
 - [使用](#使用)
+- [修改自动领取时间](#修改自动领取时间)
 - [配置说明](#配置说明)
 - [签到结果判定](#签到结果判定)
 - [日志与排错](#日志与排错)
@@ -34,7 +35,13 @@
 
 WorkBuddy 桌面端每天可以签到领 100 积分，连续 7 天额外奖励 1000 积分。问题在于**必须坚持**——漏一天，连签天数清零，那 1000 分奖励就作废了。
 
-本项目把这件事交给机器：定时唤醒客户端、核验签到结果、失败时提醒你。可选的 `token` 模式还能完全绕过界面，直接调用官方签到接口。
+本项目把这件事交给机器：**默认每天早上 10:00 自动领取**（时间可自定义），核验签到结果、失败时提醒你。可选的 `token` 模式还能完全绕过界面，直接调用官方签到接口。
+
+改时间只需一条命令：
+
+```bash
+python checkin.py --set-time 08:30    # 改成每天 08:30
+```
 
 ### 积分规则
 
@@ -50,7 +57,7 @@ WorkBuddy 桌面端每天可以签到领 100 积分，连续 7 天额外奖励 1
 ## 功能特性
 
 - **双模式自动切换**：`auto` 模式有 token 走接口，没有就走客户端兜底，永不空手
-- **每日定时**：注册两条 Windows 计划任务（默认 09:00 主签到 + 21:00 补签）
+- **每日定时**：注册两条 Windows 计划任务（默认 **每天 10:00** 主签到 + 21:00 补签），时间可自定义
 - **错过补跑**：任务开启 `StartWhenAvailable`，当时关机也会在下次开机后自动补执行
 - **日志核验**：解析客户端 `main.log` 的 `[Checkin]` 记录，用真实证据判定成败，不靠猜
 - **智能重试**：只对可恢复错误（超时 / 429 / 5xx）做指数退避重试，退避带抖动
@@ -65,7 +72,7 @@ WorkBuddy 桌面端每天可以签到领 100 积分，连续 7 天额外奖励 1
 ## 工作原理
 
 ```
-计划任务触发 (09:00 / 21:00)
+计划任务触发 (默认 10:00 / 21:00)
         │
         ▼
 读取配置 + 检查本地幂等状态 ──已领取──▶ 直接退出
@@ -143,7 +150,7 @@ powershell -ExecutionPolicy Bypass -File install_task.ps1
 看到两条任务 `Ready` 即完成：
 
 ```
-WorkBuddy每日积分-主签到  ->  每天 09:00
+WorkBuddy每日积分-主签到  ->  每天 10:00
 WorkBuddy每日积分-补签    ->  每天 21:00
 ```
 
@@ -177,6 +184,11 @@ Windows 上也可以直接**双击 `run_checkin.bat`**。
 | `python checkin.py --force` | 忽略"今日已领取"的本地幂等记录 |
 | `python checkin.py --dry-run` | 演练，不真正调用领取 |
 | `python checkin.py --discover` | 环境体检 |
+| `python checkin.py --show-schedule` | 查看定时设置，并检查是否与计划任务一致 |
+| `python checkin.py --set-time 08:30` | **修改每日领取时间**（写配置 + 同步计划任务） |
+| `python checkin.py --set-retry-time 20:00` | 修改补签时间 |
+| `python checkin.py --disable-retry` / `--enable-retry` | 关闭 / 开启补签任务 |
+| `python checkin.py --sync-task` | 按配置重新同步计划任务 |
 | `python checkin.py --no-notify` | 本次不弹系统通知 |
 | `python checkin.py --verbose` | 输出 DEBUG 日志 |
 | `python checkin.py --help` | 完整帮助 |
@@ -184,11 +196,11 @@ Windows 上也可以直接**双击 `run_checkin.bat`**。
 ### 定时任务管理
 
 ```powershell
-# 自定义时间重新注册
-powershell -ExecutionPolicy Bypass -File install_task.ps1 -PrimaryTime 08:30 -RetryTime 20:30
+# 查看当前定时设置 + 检查计划任务是否与配置一致
+python checkin.py --show-schedule
 
-# 只注册主签到，不要补签
-powershell -ExecutionPolicy Bypass -File install_task.ps1 -NoRetry
+# 按 config.json 的 schedule 段重新同步计划任务
+python checkin.py --sync-task
 
 # 注册后立即试跑一次
 powershell -ExecutionPolicy Bypass -File install_task.ps1 -RunNow
@@ -202,9 +214,81 @@ powershell -ExecutionPolicy Bypass -File install_task.ps1 -Remove
 
 ---
 
+## 修改自动领取时间
+
+**默认每天 10:00 自动领取**，补签兜底在 21:00。时间完全可自定义。
+
+### 推荐方式：一条命令
+
+```bash
+python checkin.py --set-time 08:30              # 改成每天 08:30 领取
+python checkin.py --set-time 10:00 --set-retry-time 20:00
+python checkin.py --disable-retry               # 关掉 21:00 补签
+python checkin.py --enable-retry                # 再打开
+```
+
+这条命令会**一次完成三件事**：写回 `config.json` → 重新注册 Windows 计划任务 → 打印结果并校验是否一致。
+
+### 三种修改途径
+
+| 途径 | 命令 | 适用场景 |
+|---|---|---|
+| 命令行（推荐） | `python checkin.py --set-time 08:30` | 改配置 + 自动同步，一步到位 |
+| 直接编辑配置 | 改 `config.json` 的 `schedule.primary_time`，再 `python checkin.py --sync-task` | 批量改多个字段 |
+| 计划任务脚本 | `install_task.ps1 -PrimaryTime 08:30` | 只用 PowerShell 的场景（会回写 config.json） |
+
+### 时间的保存与生效逻辑
+
+**`config.json` 的 `schedule` 段是定时时间的唯一真源**——这是本次设计的核心。
+
+```json
+"schedule": {
+  "primary_time": "10:00",     // 主领取时间，默认每天 10:00
+  "retry_time": "21:00",       // 补签时间
+  "retry_enabled": true,       // 是否启用补签
+  "task_prefix": "WorkBuddy每日积分",
+  "auto_sync": true            // --set-time 后是否立即同步计划任务
+}
+```
+
+数据流：
+
+```
+python checkin.py --set-time 08:30
+        │
+        ├─ 1. 校验并规范化（"8:30" → "08:30"，非法值直接拒绝，退出码 5）
+        ├─ 2. 写回 config.json          ← 唯一真源
+        ├─ 3. 调 install_task.ps1 重新注册计划任务   ← auto_sync=true 时
+        │      （PS1 也读 config.json，所以两者天然一致）
+        └─ 4. 回读计划任务 XML，比对并打印"✅ 一致"或漂移提示
+```
+
+### 调度如何同步更新
+
+任务的重新注册是**幂等**的：`Register-ScheduledTask -Force` 会覆盖同名任务，所以改时间不会产生重复任务。
+
+- `--set-time` 默认**立即同步**（`schedule.auto_sync = true`）。只改配置不动任务，加 `--no-sync`。
+- 手工编辑 `config.json` 后，执行 `python checkin.py --sync-task` 即可对齐。
+- **漂移检测**：`--show-schedule` 和 `--discover` 都会把配置时间与计划任务里的实际时间做比对，不一致会明确提示并给出修复命令：
+
+```
+当前定时设置
+  主签到      config.json: 10:00
+  计划任务:
+    WorkBuddy每日积分-主签到      每天 09:00
+  ⚠ 配置与计划任务不一致：
+    - 主签到：配置为 10:00，但计划任务仍为 09:00
+  执行 python checkin.py --sync-task 可一键对齐
+```
+
+- 时间由 Windows 任务计划程序本地时区解释；涉及跨时区/夏令时的地区请注意。
+- 计划任务保留 `StartWhenAvailable`：改完时间后若错过了当天的点，会在下次开机补跑。
+
+---
+
 ## 配置说明
 
-配置文件是 `config.json`（**已被 `.gitignore` 忽略，不会被提交**）。首次运行自动生成，改完立即生效，**不需要重新注册计划任务**。
+配置文件是 `config.json`（**已被 `.gitignore` 忽略，不会被提交**）。首次运行自动生成。**改 `schedule` 段后需要执行一次 `--sync-task` 才会影响计划任务**，其余字段改完立即生效。
 
 ### 模式选择
 
@@ -241,6 +325,11 @@ setx WB_USER_ID "你的accountUid"
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `auto` | `auto` / `token` / `client` |
+| `schedule.primary_time` | `10:00` | **每日自动领取时间，默认每天 10:00** |
+| `schedule.retry_time` | `21:00` | 补签时间 |
+| `schedule.retry_enabled` | `true` | 是否启用补签任务 |
+| `schedule.task_prefix` | `WorkBuddy每日积分` | 计划任务名前缀 |
+| `schedule.auto_sync` | `true` | `--set-time` 后是否立即同步计划任务 |
 | `auth.access_token` | `""` | Bearer 令牌，留空即走 client 模式 |
 | `auth.user_id` | `""` | 请求头 `X-User-Id` |
 | `auth.token_file` | `token.txt` | token 文件路径（相对项目目录） |
@@ -359,7 +448,7 @@ state/
 
 ## 常见问题
 
-**Q：为什么早上 09:00 有时没领到？**
+**Q：为什么早上 10:00 有时没领到？**
 看 `logs/checkin-*.log`。若退出码是 2，说明客户端没有自动签到（签到气泡需要一次点击）——把 `access_token` 填上即可彻底免点击。
 
 **Q：会重复领取 / 领两次吗？**
@@ -374,8 +463,14 @@ state/
 **Q：计划任务没跑？**
 确认用户处于登录状态（注销后 `Interactive` 任务不会运行，锁屏可以）。用 `Get-ScheduledTask -TaskName 'WorkBuddy每日积分*'` 查看状态。
 
+**Q：怎么把自动领取时间从 10:00 改成别的时间？**
+`python checkin.py --set-time 08:30`。它会写回 `config.json` 并自动重新注册计划任务，一条命令搞定。详见[修改自动领取时间](#修改自动领取时间)。
+
 **Q：改了 `config.json` 要重装计划任务吗？**
-不用。任务只负责调起 `checkin.py --mode auto`，行为完全由 `config.json` 决定。
+分情况：改 `schedule` 段里的**时间**需要跑一次 `--sync-task`（或者直接用 `--set-time`，它会自动同步）；改 `mode`、`auth`、`retry`、`notify` 等其他字段**不用**，计划任务只负责调起 `checkin.py --mode auto`，行为完全由配置决定。
+
+**Q：怎么确认计划任务的时间和我配置的一致？**
+`python checkin.py --show-schedule`，不一致会直接列出差异并提示修复命令。
 
 **Q：支持 macOS / Linux 吗？**
 暂不支持。窗口置前与每日定时都依赖 Windows 专属能力（`ctypes.windll`、任务计划程序）。`token` 模式的 HTTP 逻辑本身是跨平台的，欢迎 PR。

@@ -96,6 +96,13 @@ DEFAULT_CONFIG_DATA: Dict[str, Any] = {
         "log_files": ["main.log", "main.old.log"],
         "log_tail_bytes": 8000000,
     },
+    "schedule": {
+        "primary_time": "10:00",
+        "retry_time": "21:00",
+        "retry_enabled": True,
+        "task_prefix": "WorkBuddy每日积分",
+        "auto_sync": True,
+    },
     "retry": {
         "max_attempts": 3,
         "initial_backoff_seconds": 5,
@@ -162,7 +169,8 @@ def sleep_backoff(seconds: float) -> None:
 def load_config(path: str) -> Dict[str, Any]:
     data: Dict[str, Any] = {}
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as fh:
+        # utf-8-sig：兼容被 PowerShell 等工具写入 BOM 的文件
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     elif path == DEFAULT_CONFIG:
         # 首次运行：从模板生成 config.json，保证"克隆即可用"
@@ -1067,7 +1075,33 @@ class Runner:
 
 TASK_XML_DIR = r"C:\Windows\System32\Tasks"
 TASK_PREFIX = "WorkBuddy每日积分"
-DEFAULT_TASK_NAMES = ["WorkBuddy每日积分-主签到", "WorkBuddy每日积分-补签"]
+TIME_RE = re.compile(r"^\s*(\d{1,2})\s*[:：]\s*(\d{1,2})\s*$")
+
+
+def schedule_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    return cfg.get("schedule") or DEFAULT_CONFIG_DATA["schedule"]
+
+
+def task_prefix(cfg: Dict[str, Any]) -> str:
+    return str(schedule_cfg(cfg).get("task_prefix") or TASK_PREFIX)
+
+
+def default_task_names(cfg: Dict[str, Any]) -> List[str]:
+    prefix = task_prefix(cfg)
+    return ["%s-主签到" % prefix, "%s-补签" % prefix]
+
+
+def parse_hhmm(value: str) -> str:
+    """把 '10:00' / '9:5' / '10：00' 规范化为 'HH:MM'，非法则抛 ValueError。"""
+    m = TIME_RE.match(value or "")
+    if not m:
+        raise ValueError("时间格式应为 HH:MM（24 小时制），例如 10:00")
+    hour, minute = int(m.group(1)), int(m.group(2))
+    if not (0 <= hour <= 23):
+        raise ValueError("小时需在 00-23 之间，收到 %s" % hour)
+    if not (0 <= minute <= 59):
+        raise ValueError("分钟需在 00-59 之间，收到 %s" % minute)
+    return "%02d:%02d" % (hour, minute)
 
 
 def _task_names(cfg: Dict[str, Any]) -> List[str]:
@@ -1075,7 +1109,7 @@ def _task_names(cfg: Dict[str, Any]) -> List[str]:
     C:\\Windows\\System32\\Tasks 未提权时不允许列举（PermissionError），
     但按已知文件名直接读取是允许的。所以任务名由 install_task.ps1 登记到 state/tasks.json。
     """
-    names = list(DEFAULT_TASK_NAMES)
+    names = list(default_task_names(cfg))
     manifest = os.path.join(expand(cfg["state"]["state_dir"]), "tasks.json")
     if os.path.isfile(manifest):
         try:
@@ -1097,8 +1131,9 @@ def _task_definitions(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     candidates = _task_names(cfg)
     try:  # 万一有权限列举，就把非默认命名的任务也补上
+        prefix = task_prefix(cfg)
         for name in os.listdir(TASK_XML_DIR):
-            if name.startswith(TASK_PREFIX) and name not in candidates:
+            if name.startswith(prefix) and name not in candidates:
                 candidates.append(name)
     except OSError:
         pass
@@ -1126,6 +1161,199 @@ def _task_definitions(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         info["enabled"] = "<Enabled>false</Enabled>" not in xml
         out.append(info)
     return sorted(out, key=lambda x: x["name"])
+
+
+# --------------------------------------------------------------------------
+# 定时时间的保存与同步
+# --------------------------------------------------------------------------
+
+def save_config_file(path: str, data: Dict[str, Any]) -> None:
+    """写回配置文件。用原始 dict（而非合并后的默认值）以保留用户文件结构。"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def apply_schedule_times(path: str, primary: Optional[str] = None,
+                         retry: Optional[str] = None,
+                         retry_enabled: Optional[bool] = None) -> Dict[str, Any]:
+    """
+    把新的时间写进 config.json —— config.json 是定时时间的**唯一真源**。
+    返回写入后的完整配置（含默认值合并结果）。
+    """
+    load_config(path)  # 确保文件存在（首次会从 config.example.json 生成）
+    with open(path, "r", encoding="utf-8-sig") as fh:
+        raw = json.load(fh)
+
+    block = raw.setdefault("schedule", {})
+    if primary is not None:
+        block["primary_time"] = parse_hhmm(primary)
+    if retry is not None:
+        block["retry_time"] = parse_hhmm(retry)
+    if retry_enabled is not None:
+        block["retry_enabled"] = bool(retry_enabled)
+
+    # 与内置默认合并后校验，避免写坏
+    merged = deep_merge(DEFAULT_CONFIG_DATA, raw)
+    parse_hhmm(str(schedule_cfg(merged)["primary_time"]))
+    parse_hhmm(str(schedule_cfg(merged)["retry_time"]))
+
+    save_config_file(path, raw)
+    return merged
+
+
+def sync_scheduled_tasks(cfg: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    按 config.json 的 schedule 段重新注册 Windows 计划任务。
+    复用 install_task.ps1（注册逻辑只有一份实现），因此时间改了任务也就跟着改了。
+    """
+    script = os.path.join(BASE_DIR, "install_task.ps1")
+    if not os.path.isfile(script):
+        return False, "找不到 install_task.ps1（应与 checkin.py 同目录）"
+    if not IS_WINDOWS:
+        return False, "仅支持 Windows 计划任务"
+
+    sch = schedule_cfg(cfg)
+    cmd = [
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+        "-PrimaryTime", str(sch["primary_time"]),
+        "-TaskPrefix", task_prefix(cfg),
+    ]
+    if sch.get("retry_enabled", True):
+        cmd += ["-RetryTime", str(sch["retry_time"])]
+    else:
+        cmd += ["-NoRetry"]
+
+    LOG.info("同步计划任务: 主签到 %s%s", sch["primary_time"],
+             "，补签 %s" % sch["retry_time"] if sch.get("retry_enabled", True) else "（无补签）")
+    try:
+        # 不用 text=True：中文 Windows 上 PowerShell 子进程输出多为 GBK，需自行解码
+        proc = subprocess.run(cmd, capture_output=True, timeout=300,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, "调用 install_task.ps1 失败: %s" % exc
+
+    output = _decode_console(proc.stdout) + _decode_console(proc.stderr)
+    if proc.returncode != 0:
+        return False, "install_task.ps1 退出码 %s\n%s" % (proc.returncode, output.strip())
+    return True, output.strip()
+
+
+def _decode_console(raw: Optional[bytes]) -> str:
+    """PowerShell 在中文 Windows 上可能输出 GBK/UTF-16，逐个编码尝试解码。"""
+    if not raw:
+        return ""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    for enc in ("utf-8", "gbk", "cp936"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+def schedule_status(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """比对 config.json 的时间与计划任务里的实际时间，给出漂移提示。"""
+    sch = schedule_cfg(cfg)
+    want = {
+        "主签到": str(sch["primary_time"]),
+        "补签": str(sch["retry_time"]) if sch.get("retry_enabled", True) else None,
+    }
+    tasks = _task_definitions(cfg)
+    have: Dict[str, str] = {}
+    for t in tasks:
+        suffix = t["name"][len(task_prefix(cfg)):].lstrip("-")
+        have[suffix] = t["start"]
+
+    drift: List[str] = []
+    for label, expected in want.items():
+        if expected is None:
+            if label in have:
+                drift.append("%s：配置为禁用，但计划任务仍存在（每天 %s）" % (label, have[label]))
+            continue
+        actual = have.get(label)
+        if actual is None:
+            drift.append("%s：配置为 %s，但未找到对应计划任务" % (label, expected))
+        elif actual != expected:
+            drift.append("%s：配置为 %s，但计划任务仍为 %s" % (label, expected, actual))
+    for label in have:
+        if label not in want:
+            drift.append("计划任务「%s」不在配置中（每天 %s）" % (label, have[label]))
+
+    return {"config": {"primary_time": want["主签到"], "retry_time": want["补签"],
+                       "retry_enabled": bool(sch.get("retry_enabled", True))},
+            "tasks": tasks, "drift": drift}
+
+
+def run_schedule_command(cfg: Dict[str, Any], path: str, args: argparse.Namespace) -> int:
+    """处理 --show-schedule / --set-time / --set-retry-time / --sync-task 等时间相关命令。"""
+    changed = args.set_time is not None or args.set_retry_time is not None \
+        or args.enable_retry or args.disable_retry
+
+    if changed:
+        try:
+            cfg = apply_schedule_times(
+                path,
+                primary=args.set_time,
+                retry=args.set_retry_time,
+                retry_enabled=True if args.enable_retry else (False if args.disable_retry else None),
+            )
+        except ValueError as exc:
+            LOG.error("时间参数无效: %s", exc)
+            return EXIT_ENV_ERROR
+
+        sch = schedule_cfg(cfg)
+        LOG.info("已保存到 %s：", os.path.basename(path))
+        LOG.info("  主签到  每天 %s", sch["primary_time"])
+        LOG.info("  补签    %s", ("每天 %s" % sch["retry_time"]) if sch.get("retry_enabled", True) else "已禁用")
+
+    should_sync = args.sync_task or (changed and schedule_cfg(cfg).get("auto_sync", True)
+                                     and not args.no_sync)
+
+    if should_sync:
+        ok, detail = sync_scheduled_tasks(cfg)
+        if not ok:
+            LOG.error("计划任务同步失败:\n%s", detail)
+            LOG.error("可稍后手动重试：python checkin.py --sync-task")
+            return EXIT_ENV_ERROR
+        for line in detail.splitlines():
+            if line.strip():
+                LOG.info("  %s", line.strip())
+
+    if args.show_schedule or changed or should_sync:
+        st = schedule_status(cfg)
+        task_map = {t["name"]: t["start"] for t in st["tasks"]}
+        print("")
+        print("当前定时设置")
+        print("  主签到      config.json: %s" % st["config"]["primary_time"])
+        if st["config"]["retry_enabled"]:
+            print("  补签时间    config.json: %s" % st["config"]["retry_time"])
+        else:
+            print("  补签        已禁用")
+        print("  计划任务:")
+        if task_map:
+            for name, start in task_map.items():
+                print("    %-28s 每天 %s" % (name, start or "?"))
+        else:
+            print("    （未注册）")
+        if st["drift"]:
+            print("")
+            print("  ⚠ 配置与计划任务不一致：")
+            for item in st["drift"]:
+                print("    - %s" % item)
+            print("  执行 python checkin.py --sync-task 可一键对齐")
+        elif task_map:
+            print("  ✅ 配置与计划任务一致")
+
+    if not changed and not args.sync_task and not args.show_schedule:
+        LOG.info("未指定任何操作。可用：--show-schedule / --set-time HH:MM / --sync-task")
+    return EXIT_OK
 
 
 def _tcp_ok(host: str, port: int = 443, timeout: float = 8.0) -> Tuple[bool, str]:
@@ -1234,12 +1462,18 @@ def run_discover(cfg: Dict[str, Any]) -> int:
 
     print("")
     print("[6] 每日定时任务")
-    tasks = _task_definitions(cfg)
-    if not tasks:
-        check(False, "计划任务", "未注册。执行 install_task.ps1 后生效", blocking=False)
-    for t in tasks:
+    st = schedule_status(cfg)
+    conf = st["config"]
+    line("[OK]", "配置时间",
+         "主签到每天 %s%s" % (conf["primary_time"],
+                            "，补签每天 %s" % conf["retry_time"] if conf["retry_enabled"] else "，补签已禁用"))
+    if not st["tasks"]:
+        check(False, "计划任务", "未注册。执行 python checkin.py --sync-task 后生效", blocking=False)
+    for t in st["tasks"]:
         line("[OK]" if t["enabled"] else "[--]", "计划任务",
              "%s  每天 %s%s" % (t["name"], t["start"] or "?", "" if t["enabled"] else "（已禁用）"))
+    for item in st["drift"]:
+        line("[--]", "不一致", "%s -> 执行 --sync-task 对齐" % item)
 
     print("")
     print("[7] 读写权限")
@@ -1280,6 +1514,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-notify", action="store_true", help="本次不弹系统通知（只写提醒文件）")
     p.add_argument("--discover", action="store_true", help="自检运行环境并输出探测结果")
     p.add_argument("--verbose", action="store_true", help="输出 DEBUG 日志")
+
+    sch = p.add_argument_group("定时设置", "修改每日自动领取时间（默认每天 10:00）")
+    sch.add_argument("--show-schedule", action="store_true",
+                     help="查看当前定时设置，并检查计划任务是否与配置一致")
+    sch.add_argument("--set-time", metavar="HH:MM",
+                     help="设置主领取时间并同步计划任务（写入 config.json）")
+    sch.add_argument("--set-retry-time", metavar="HH:MM",
+                     help="设置补签时间并同步计划任务")
+    sch.add_argument("--disable-retry", action="store_true", help="关闭 21:00 补签任务")
+    sch.add_argument("--enable-retry", action="store_true", help="重新开启补签任务")
+    sch.add_argument("--sync-task", action="store_true",
+                     help="按 config.json 的 schedule 段重新同步 Windows 计划任务")
+    sch.add_argument("--no-sync", action="store_true",
+                     help="配合 --set-time 使用：只改配置，暂不同步计划任务")
     return p
 
 
@@ -1292,6 +1540,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.discover:
         setup_logging(cfg)
         return run_discover(cfg)
+
+    # 定时设置类命令走轻量路径：不探测客户端、不解析凭据
+    if any((args.show_schedule, args.set_time, args.set_retry_time,
+            args.sync_task, args.enable_retry, args.disable_retry)):
+        setup_logging(cfg)
+        if args.enable_retry and args.disable_retry:
+            LOG.error("--enable-retry 与 --disable-retry 不能同时使用")
+            return EXIT_ENV_ERROR
+        return run_schedule_command(cfg, os.path.abspath(args.config), args)
 
     runner = Runner(cfg, args)
     purge_old_logs(runner.log_dir, int(cfg["logging"].get("keep_days", 60)))

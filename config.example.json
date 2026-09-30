@@ -38,6 +38,20 @@
     "log_tail_bytes": 8000000
   },
 
+  "schedule": {
+    "_comment": [
+      "每日自动领取时间 —— 这里是定时时间的唯一真源。",
+      "改时间推荐用命令行：python checkin.py --set-time 10:00",
+      "它会写回本文件并自动同步 Windows 计划任务；也可手工改本文件后执行 python checkin.py --sync-task。",
+      "retry_enabled=true 表示额外在 retry_time 跑一次补签兜底（脚本幂等，不会重复领）。"
+    ],
+    "primary_time": "10:00",
+    "retry_time": "21:00",
+    "retry_enabled": true,
+    "task_prefix": "WorkBuddy每日积分",
+    "auto_sync": true
+  },
+
   "retry": {
     "max_attempts": 3,
     "initial_backoff_seconds": 5,
