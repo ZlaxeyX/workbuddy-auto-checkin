@@ -101,17 +101,22 @@ DEFAULT_CONFIG_DATA: Dict[str, Any] = {
         "log_tail_bytes": 8000000,
     },
     "schedule": {
-        "primary_time": "10:00",
+        "primary_time": "12:00",
         "retry_time": "21:00",
         "retry_enabled": True,
         "task_prefix": "WorkBuddy每日积分",
         "auto_sync": True,
+        # 断网韧性：主签到在当天内按间隔重复触发，网络恢复后自动补领（脚本幂等）
+        "repeat_minutes": 30,
+        "repeat_hours": 12,
     },
     "retry": {
         "max_attempts": 3,
         "initial_backoff_seconds": 5,
         "backoff_multiplier": 2.0,
         "max_backoff_seconds": 120,
+        # 网络类失败（超时/连不上/5xx）的持续重试窗口，单位分钟；0=只用退避次数
+        "network_retry_minutes": 5,
     },
     "logging": {"log_dir": "logs", "level": "INFO", "keep_days": 60},
     "state": {"state_dir": "state"},
@@ -164,6 +169,16 @@ def sleep_backoff(seconds: float) -> None:
     """带 ±20% 抖动，避免固定节奏重试。"""
     jitter = seconds * random.uniform(-0.2, 0.2)
     time.sleep(max(0.0, seconds + jitter))
+
+
+def _fmt_duration(seconds: float) -> str:
+    """把秒数格式化成人话，避免小窗口显示成「0 分钟」。"""
+    if seconds < 60:
+        return "%.0f 秒" % seconds
+    minutes = seconds / 60.0
+    if minutes < 60:
+        return "%.0f 分钟" % minutes
+    return "%.1f 小时" % (minutes / 60.0)
 
 
 # --------------------------------------------------------------------------
@@ -918,23 +933,43 @@ class Runner:
         delay = float(self.retry_cfg.get("initial_backoff_seconds", 5))
         mult = float(self.retry_cfg.get("backoff_multiplier", 2.0))
         cap = float(self.retry_cfg.get("max_backoff_seconds", 120))
+        # 断网韧性：网络类失败（超时/连不上/5xx）不再只重试 N 次就放弃，
+        # 而是在一个时间窗口内持续重试，覆盖"断网几分钟后又恢复"的场景。
+        # 窗口耗尽才放弃；此时还有补签任务和主签到的重复触发兜底。
+        net_window = float(self.retry_cfg.get("network_retry_minutes", 5) or 0) * 60.0
 
         last = ApiResult("business_error", msg="未执行")
-        for attempt in range(1, attempts + 1):
+        deadline = time.time() + net_window if net_window > 0 else None
+        attempt = 0
+        while True:
+            attempt += 1
             last = fn()
-            LOG.info("%s 第 %d/%d 次 -> kind=%s http=%s code=%s msg=%s",
-                     label, attempt, attempts, last.kind, last.http_status, last.code, last.msg)
+            LOG.info("%s 第 %d 次 -> kind=%s http=%s code=%s msg=%s",
+                     label, attempt, last.kind, last.http_status, last.code, last.msg)
             self.jsonl.write({"event": "attempt", "stage": label, "attempt": attempt,
                               "kind": last.kind, "http": last.http_status,
                               "code": last.code, "msg": last.msg, "data": last.data})
             if last.kind in ("ok", "already", "auth_error", "business_error"):
                 return last
-            if attempt < attempts:
-                wait = min(delay, cap)
-                LOG.warning("%s 可重试失败，%.1fs 后重试", label, wait)
-                sleep_backoff(wait)
-                delay = min(delay * mult, cap)
-        return last
+
+            # 只在网络类失败时启用窗口重试；其余按原退避次数处理
+            if deadline is None:
+                if attempt >= attempts:
+                    return last
+            else:
+                if time.time() >= deadline:
+                    LOG.warning("%s 网络重试窗口（%s）内仍未恢复，放弃本次",
+                                label, _fmt_duration(net_window))
+                    return last
+
+            wait = min(delay, cap)
+            if deadline is not None:
+                wait = min(wait, max(1.0, deadline - time.time()))
+            LOG.warning("%s 可重试失败，%.1fs 后重试（网络窗口剩余 %.0fs）"
+                        if deadline is not None else "%s 可重试失败，%.1fs 后重试",
+                        label, wait, max(0.0, deadline - time.time()) if deadline is not None else 0)
+            sleep_backoff(wait)
+            delay = min(delay * mult, cap)
 
     # ---- token 模式 ----
     def run_token_mode(self) -> int:
@@ -1292,8 +1327,16 @@ def sync_scheduled_tasks(cfg: Dict[str, Any]) -> Tuple[bool, str]:
     else:
         cmd += ["-NoRetry"]
 
+    # 断网韧性：把重复触发间隔传给注册脚本（0 表示关闭）
+    rep_min = int(sch.get("repeat_minutes", 30) or 0)
+    rep_hour = int(sch.get("repeat_hours", 12) or 0)
+    cmd += ["-RepeatMinutes", str(rep_min), "-RepeatHours", str(rep_hour)]
+
     LOG.info("同步计划任务: 主签到 %s%s", sch["primary_time"],
              "，补签 %s" % sch["retry_time"] if sch.get("retry_enabled", True) else "（无补签）")
+    if rep_min >= 5:
+        LOG.info("断网韧性: 主签到每 %s 分钟重复一次，持续 %s 小时（网络恢复后自动补领）",
+                 rep_min, rep_hour)
     try:
         # 不用 text=True：中文 Windows 上 PowerShell 子进程输出多为 GBK，需自行解码
         proc = subprocess.run(cmd, capture_output=True, timeout=300,
@@ -1553,6 +1596,17 @@ def run_discover(cfg: Dict[str, Any]) -> int:
              "%s  每天 %s%s" % (t["name"], t["start"] or "?", "" if t["enabled"] else "（已禁用）"))
     for item in st["drift"]:
         line("[--]", "不一致", "%s -> 执行 --sync-task 对齐" % item)
+
+    # 断网韧性
+    rep_min = int(conf.get("repeat_minutes", 30) or 0)
+    net_min = float(cfg.get("retry", {}).get("network_retry_minutes", 5) or 0)
+    if rep_min >= 5:
+        line("[OK]", "断网韧性",
+             "主签到每 %s 分钟重试一次、持续 %s 小时；单次运行时网络窗口 %s"
+             % (rep_min, conf.get("repeat_hours", 12), _fmt_duration(net_min * 60)))
+    else:
+        line("[--]", "断网韧性",
+             "重复触发已关闭（schedule.repeat_minutes=%s），断网只能等补签任务" % rep_min)
 
     print("")
     print("[7] 读写权限")

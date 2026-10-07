@@ -24,6 +24,8 @@ param(
     [string]$RetryTime   = "",
     [string]$TaskPrefix  = "",
     [string]$PythonPath  = "",
+    [int]$RepeatMinutes  = -1,
+    [int]$RepeatHours    = -1,
     [switch]$NoRetry,
     [switch]$RunNow,
     [switch]$Remove
@@ -47,7 +49,7 @@ if (-not $TaskPrefix) {
 }
 if (-not $PrimaryTime) {
     if ($CfgSchedule -and $CfgSchedule.primary_time) { $PrimaryTime = [string]$CfgSchedule.primary_time }
-    else { $PrimaryTime = "10:00" }
+    else { $PrimaryTime = "12:00" }
 }
 if (-not $RetryTime) {
     if ($CfgSchedule -and $CfgSchedule.retry_time) { $RetryTime = [string]$CfgSchedule.retry_time }
@@ -58,6 +60,20 @@ if (-not $RetryTime) {
 $RetryOn = $true
 if ($CfgSchedule -and $CfgSchedule.retry_enabled -eq $false) { $RetryOn = $false }
 if ($PSBoundParameters.ContainsKey("NoRetry") -and $NoRetry) { $RetryOn = $false }
+
+# 断网韧性：主签到在当天内按间隔重复触发（脚本幂等，已领取会自动跳过）。
+# 这样网络恢复后无需等到补签时间点，最多一个间隔就能补领。
+# 命令行优先，其次 config.json，默认 30 分钟 / 持续 12 小时。
+if ($RepeatMinutes -lt 0) {
+    if ($CfgSchedule -and $null -ne $CfgSchedule.repeat_minutes) { $RepeatMinutes = [int]$CfgSchedule.repeat_minutes }
+    else { $RepeatMinutes = 30 }
+}
+if ($RepeatHours -lt 0) {
+    if ($CfgSchedule -and $null -ne $CfgSchedule.repeat_hours) { $RepeatHours = [int]$CfgSchedule.repeat_hours }
+    else { $RepeatHours = 12 }
+}
+if ($RepeatMinutes -lt 5 -or $RepeatMinutes -gt 720) { $RepeatMinutes = 0 }   # 越界即关闭重复
+if ($RepeatHours -lt 1 -or $RepeatHours -gt 23) { $RepeatHours = 12 }
 
 function Write-Step($msg) { Write-Host "  $msg" }
 function Fail($msg) { Write-Host "  [×] $msg" -ForegroundColor Red; exit 1 }
@@ -143,7 +159,13 @@ try {
 
 # ---------------- 注册 ----------------
 function New-CheckinTask {
-    param([string]$Name, [string]$Time, [string]$Tag)
+    param(
+        [string]$Name,
+        [string]$Time,
+        [string]$Tag,
+        [int]$RepMinutes = 0,
+        [int]$RepHours = 0
+    )
 
     $hh, $mm = $Time.Split(":")
     $at = (Get-Date).Date.AddHours([int]$hh).AddMinutes([int]$mm)
@@ -154,6 +176,25 @@ function New-CheckinTask {
         -WorkingDirectory $ScriptDir
 
     $trigger = New-ScheduledTaskTrigger -Daily -At $at
+
+    # 断网韧性：当天内按间隔重复触发。脚本幂等（本地状态 + 服务端 10001），
+    # 已领取时几乎瞬间退出，重复执行无副作用。
+    #
+    # 坑：-RepetitionInterval / -RepetitionDuration 只存在于 Once 参数集，
+    # 和 -Daily 一起用会报 AmbiguousParameterSet；而 Daily 触发器的
+    # $trigger.Repetition 默认是 $null，直接 .Interval 赋值则报找不到属性。
+    # 正确做法是手工构造 MSFT_TaskRepetitionPattern 的 CIM 实例再挂上去。
+    if ($RepMinutes -ge 5) {
+        $trigger.Repetition = New-CimInstance `
+            -ClassName MSFT_TaskRepetitionPattern `
+            -Namespace "Root/Microsoft/Windows/TaskScheduler" `
+            -ClientOnly `
+            -Property @{
+                Interval           = ("PT{0}M" -f $RepMinutes)
+                Duration           = ("PT{0}H" -f $RepHours)
+                StopAtDurationEnd  = $false
+            }
+    }
 
     $settings = New-ScheduledTaskSettingsSet `
         -StartWhenAvailable `
@@ -177,7 +218,11 @@ function New-CheckinTask {
         -Description "WorkBuddy 每日积分自动领取（$Tag）。幂等：当天已领取会自动跳过。" `
         -Force | Out-Null
 
-    Write-Step "已注册: $Name  ->  每天 $Time"
+    if ($RepMinutes -ge 5) {
+        Write-Step "已注册: $Name  ->  每天 $Time 起，每 $RepMinutes 分钟重试一次，持续 $RepHours 小时（断网恢复后自动补领）"
+    } else {
+        Write-Step "已注册: $Name  ->  每天 $Time"
+    }
     return [pscustomobject]@{ name = $Name; time = $Time; tag = $Tag }
 }
 
@@ -218,7 +263,9 @@ function Save-ScheduleToConfig($primary, $retry, $retryOn, $explicit) {
 }
 
 $created = @()
-$created += New-CheckinTask -Name "$TaskPrefix-主签到" -Time $PrimaryTime -Tag "主签到"
+# 主签到带重复触发（断网韧性）；补签保持单次，作为当天最后的兜底
+$created += New-CheckinTask -Name "$TaskPrefix-主签到" -Time $PrimaryTime -Tag "主签到" `
+    -RepMinutes $RepeatMinutes -RepHours $RepeatHours
 if ($RetryOn) {
     $created += New-CheckinTask -Name "$TaskPrefix-补签" -Time $RetryTime -Tag "补签兜底"
 } else {
