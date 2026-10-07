@@ -28,6 +28,7 @@ auto   : 有 token 走 token，否则走 client
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 import ctypes.wintypes as wintypes
 import glob
@@ -305,6 +306,41 @@ class Credentials:
     @property
     def valid(self) -> bool:
         return bool(self.token)
+
+    @property
+    def expiry(self) -> Optional[Any]:
+        """解析 JWT 的 exp，返回本地时间的 datetime；非 JWT 或无 exp 返回 None。"""
+        parts = self.token.split(".")
+        if len(parts) != 3:
+            return None
+        seg = parts[1]
+        seg += "=" * (-len(seg) % 4)
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(seg).decode("utf-8", "replace"))
+        except Exception:
+            return None
+        exp = payload.get("exp")
+        if not exp:
+            return None
+        try:
+            return datetime.fromtimestamp(int(exp), timezone.utc).astimezone()
+        except (ValueError, OSError, OverflowError):
+            return None
+
+    def days_left(self) -> Optional[int]:
+        exp = self.expiry
+        if exp is None:
+            return None
+        return (exp - now_local()).days
+
+    def expiry_text(self) -> str:
+        """人类可读的过期描述，用于日志与体检输出。"""
+        exp = self.expiry
+        if exp is None:
+            return "未知有效期"
+        left = self.days_left() or 0
+        tail = "（已过期）" if left < 0 else "（还剩 %d 天）" % left
+        return "%s %s" % (exp.strftime("%Y-%m-%d %H:%M"), tail)
 
 
 def resolve_credentials(cfg: Dict[str, Any], cli_token: str = "", cli_uid: str = "") -> Credentials:
@@ -894,6 +930,15 @@ class Runner:
     # ---- token 模式 ----
     def run_token_mode(self) -> int:
         LOG.info("== token 模式：直连官方签到接口 ==")
+
+        # token 临近过期时提前告知，避免某天静默失效
+        left = self.cred.days_left()
+        if left is not None and left <= 7:
+            LOG.warning("access_token %s", self.cred.expiry_text())
+            if left < 0:
+                LOG.error("token 已过期，请在客户端登录后重新执行：python extract_token.py")
+            else:
+                LOG.warning("建议尽快续期：python extract_token.py")
         api = ApiClient(self.cfg, self.cred)
 
         status = self.call_with_retry("checkin-status", api.status)
@@ -1459,6 +1504,19 @@ def run_discover(cfg: Dict[str, Any]) -> int:
           else "未配置 -> 走 client 模式；填入可切换为全自动 token 模式", blocking=False)
     check(bool(cred.user_id) or cred.valid, "X-User-Id",
           cred.user_id or "未配置（token 模式建议一并填写）", blocking=False)
+
+    if cred.valid:
+        left = cred.days_left()
+        if left is None:
+            line("[--]", "token 有效期", "无法解析（非 JWT 格式），按接口返回结果为准")
+        elif left < 0:
+            line("[!!]", "token 有效期", "%s -> 已过期，请重新提取" % cred.expiry_text())
+            print("         %-14s %s" % ("续期方法", "python extract_token.py"))
+        elif left <= 7:
+            line("[!!]", "token 有效期", "%s -> 即将过期" % cred.expiry_text())
+            print("         %-14s %s" % ("续期方法", "python extract_token.py"))
+        else:
+            line("[OK]", "token 有效期", cred.expiry_text())
 
     print("")
     print("[6] 每日定时任务")

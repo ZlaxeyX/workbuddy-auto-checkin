@@ -104,7 +104,9 @@ token 模式                 client 模式
    写状态，退出码 0     指数退避重试 ×3 → 弹通知
 ```
 
-**为什么需要两种模式？** 客户端的领取动作绑定在界面上（点击顶部头像旁的签到气泡）。客户端启动后**常常**会自动领取，但这不是契约保证。所以要真正无人值守，需要 `token` 模式。
+**为什么需要两种模式？** 客户端的领取动作绑定在界面上（点击顶部头像旁的签到气泡）—— 逆向 `app.asar` 可见 `handleClaim` 只有两个调用点，且**全部是点击触发**，窗口置前只会刷新状态、不会领取。所以 `client` 模式的能力上限是"保证客户端上线 + 核验结果"，无法代替那一次点击。
+
+要真正无人值守，请用 `token` 模式直连接口。项目自带 `extract_token.py` 可一键从运行中的客户端提取凭据，详见下方 [凭据配置](#凭据配置)。
 
 ---
 
@@ -172,6 +174,10 @@ WorkBuddy每日积分-补签    ->  每天 21:00
 # 环境体检（7 项检查 + 明确结论）
 python checkin.py --discover
 
+# 关键一步：提取登录态，切换到全自动 token 模式
+# （需客户端正在运行且已登录；否则只能用 client 模式，需手动点签到气泡）
+python extract_token.py
+
 # 查今日签到状态（只读，不做任何写操作）
 python checkin.py --show-status
 
@@ -180,6 +186,8 @@ python checkin.py
 ```
 
 Windows 上也可以直接**双击 `run_checkin.bat`**。
+
+> 不跑 `extract_token.py` 也能用，但会走 `client` 模式：脚本只保证客户端上线并核验结果，**领取动作仍需你点一次签到气泡**。想彻底免点击，就跑一次提取。
 
 ### 常用命令
 
@@ -200,6 +208,8 @@ Windows 上也可以直接**双击 `run_checkin.bat`**。
 | `python checkin.py --no-notify` | 本次不弹系统通知 |
 | `python checkin.py --verbose` | 输出 DEBUG 日志 |
 | `python checkin.py --help` | 完整帮助 |
+| `python extract_token.py` | **提取登录态并写入 config.json**（切到全自动 token 模式） |
+| `python extract_token.py --dry-run` | 只探测不写文件；`--all` 列全部候选；`--show` 打印明文 |
 
 ### 定时任务管理
 
@@ -317,16 +327,54 @@ python checkin.py --set-time 08:30
 3. `token.txt`（第 1 行 token，第 2 行 user_id）
 4. `config.json` 的 `auth.access_token` / `auth.user_id`
 
-**获取方式**：WorkBuddy 客户端 → `Ctrl+Shift+I` 打开 DevTools → Network → 过滤 `billing/meter` → 点一次签到 → 复制请求头里的 `Authorization`（去掉 `Bearer ` 前缀）与 `X-User-Id`。
+#### 一键提取（推荐）
 
-**推荐用环境变量**，避免明文落在项目里：
+项目自带 `extract_token.py`，直接从运行中的客户端进程内存里读登录态，**不用开 DevTools、不用抓包、不碰磁盘上的加密文件**：
+
+```powershell
+python extract_token.py            # 扫描并自动写入 config.json（自动备份 config.json.bak）
+python extract_token.py --dry-run  # 只探测看结果，不写文件
+python extract_token.py --all      # 列出全部候选而不止最优一个
+python extract_token.py --show     # 打印明文（仅本地排错用）
+```
+
+前提：WorkBuddy 客户端**正在运行且已登录**。输出示例：
+
+```
+ 1. eyJhbG...(1387 chars)
+    过期  : 2026-11-05 00:17（还有 27 天）
+    字段  : sub=<你的 accountUid>, nickname=<你的昵称>
+    来源  : PID 25872
+
+已写入 config.json
+  auth.access_token = eyJhbG...(1387 chars)
+  auth.user_id      = <你的 accountUid>
+  mode              = token
+```
+
+工具只**只读**进程内存，不写入、不注入、不修改客户端任何状态；默认只显示脱敏摘要，不打印明文。
+
+#### 手工获取（备用）
+
+客户端 → `Ctrl+Shift+I` → Network → 过滤 `billing/meter` → 点一次签到 → 复制请求头的 `Authorization`（去掉 `Bearer `）与 `X-User-Id`。
+
+#### 用环境变量（避免明文落盘）
 
 ```powershell
 setx WB_ACCESS_TOKEN "你的token"
 setx WB_USER_ID "你的accountUid"
 ```
 
-> `access_token` 会过期。失效时脚本报 `登录态失效`（退出码 3），自动降级把客户端拉起来兜底，并弹通知提醒更新。
+#### token 有效期与续期
+
+`access_token` 通常**有效期约 30 天**。脚本会自动解析 JWT 的 `exp` 并提前预警：
+
+- `--discover` 体检里新增一行 **token 有效期**，剩余 ≤7 天时标 `[!!]` 并给出续期命令
+- 每天签到时若剩余 ≤7 天，日志里打 `WARNING`；已过期则打 `ERROR`
+
+续期只需重新跑一次：`python extract_token.py`（客户端需在运行）。
+
+失效时脚本报 `登录态失效`（退出码 3），自动降级把客户端拉起来兜底，并弹通知提醒更新。
 
 ### 完整配置表
 
@@ -429,10 +477,19 @@ state/
 
 ### 排错顺序
 
-1. `python checkin.py --discover` —— 先看 7 项体检哪一项带 `[!!]`
+1. `python checkin.py --discover` —— 先看体检哪一项带 `[!!]`（凭据、token 有效期、计划任务都在里面）
 2. 看 `logs/checkin-<今天>.log` 的最后一次运行详情
 3. 看退出码对应的含义（见上表）
 4. `python checkin.py --show-status --verbose` —— 只读诊断，不动数据
+
+**典型症状对照：**
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 日志说"已签到"但积分没到账 | 读的是客户端日志，而客户端自己没领（`handleClaim` 只认点击） | 跑 `python extract_token.py` 切 token 模式 |
+| 退出码 `2`（需人工点击） | client 模式下客户端没自动领取 | 同上 |
+| 退出码 `3`（登录态失效） | token 过期 | 重跑 `python extract_token.py` |
+| 体检提示 token 还剩 ≤7 天 | 临近过期 | 提前续期，别等失效 |
 
 ---
 
@@ -444,6 +501,15 @@ state/
 - **token 模式**下 `access_token` 只存在你本地的 `config.json` / `token.txt` / 环境变量里，脚本仅在向 `copilot.tencent.com` 发请求时使用它，**不会写入日志、不会上传到任何第三方**。
 - 所有日志只记录状态码、业务 code、积分与连签天数等**非敏感信息**；账号标识（`X-User-Id`）不落盘。
 - 网络请求只发往配置的 `api.base_url`（默认官方域名），无任何遥测。
+
+**`extract_token.py` 的边界：**
+
+- 只**只读**运行中的 WorkBuddy 进程内存（`ReadProcessMemory` + `VirtualQueryEx`），**不写入、不注入、不修改客户端任何状态**，也不会启动或重启客户端。
+- 只扫描**属于你自己的、已登录的** WorkBuddy 进程，不碰其他进程的用户数据。
+- 默认只打印脱敏摘要（前 6 位 + 长度 + 过期时间），明文只写入本地 `config.json`；需要明文时用 `--show`。
+- 纯标准库 + Win32 API，无第三方依赖、无联网行为。
+
+> 提取的是你自己的登录态，用途是替你完成一次本可以手动点击的签到，等价于"你自己点了一下"。请妥善保管 `config.json`。
 
 **仓库层面的保护：**
 
