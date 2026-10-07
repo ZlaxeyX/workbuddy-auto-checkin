@@ -69,6 +69,9 @@ EXIT_ENV_ERROR = 5     # 客户端不可用、配置错误等环境问题
 # 接口业务错误里代表"今天已经签过了"的关键字（幂等，不视为失败）
 ALREADY_HINTS = ("already", "duplicate", "重复", "已签", "已领取", "已签到", "今日已")
 
+# 服务端明确的"今日已签到"业务码（实测 daily-checkin 返回 HTTP 400 + code 10001）
+ALREADY_CODES = (10001,)
+
 LOG = logging.getLogger("wb-checkin")
 
 DEFAULT_CONFIG_DATA: Dict[str, Any] = {
@@ -458,6 +461,12 @@ class ApiClient:
             return ApiResult("auth_error", status, code, msg or "登录态失效", data)
         if status == 429 or status >= 500:
             return ApiResult("retryable", status, code, msg or "服务端异常 HTTP %s" % status, data)
+
+        # 服务端在"今天已签到"时返回 HTTP 400 + code 10001 + msg「今天已签到，请明天再来」，
+        # 这是正常终态而非失败。必须在判 4xx 之前先识别，否则会误报、白重试、还弹错误通知。
+        if _looks_already(msg) or code in ALREADY_CODES:
+            return ApiResult("already", status, code, msg or "今日已签到", data)
+
         if status >= 400:
             return ApiResult("business_error", status, code, msg or "HTTP %s" % status, data)
 
@@ -967,7 +976,11 @@ class Runner:
         if claim.kind in ("ok", "already"):
             credit = claim.data.get("credit")
             streak = claim.data.get("streak_days")
-            LOG.info("领取成功：+%s 积分，连签 %s 天", credit, streak)
+            if claim.kind == "already" and credit is None:
+                # 服务端回「今天已签到」时 data 为空，别打出 +None
+                LOG.info("今日已签到，无需重复领取（服务端：%s）", claim.msg or "已签到")
+            else:
+                LOG.info("领取成功：+%s 积分，连签 %s 天", credit, streak)
             self.state.save(claimed=True, mode="token", credit=credit, streak_days=streak,
                             note="claim:" + claim.kind)
             self.jsonl.write({"event": "result", "mode": "token", "result": "success",
@@ -1098,6 +1111,14 @@ class Runner:
                      res.kind, res.http_status, res.code, res.msg)
             if res.kind == "ok":
                 print(json.dumps(res.data, ensure_ascii=False, indent=2))
+                # HTTP 直连时 checkin-status 可能返回 active=false 的全零默认值，
+                # 与客户端 UI（走内部 RPC）看到的不一致，此时提示以领取接口为准。
+                if res.data and res.data.get("active") is False:
+                    print()
+                    print("  注意: 接口 active=false，该字段在 HTTP 直连下可能不反映真实状态。")
+                    print("        判断「今天到底领没领」请以领取接口为准：")
+                    print("        python checkin.py --mode token --force")
+                    print("        若返回 code=10001「今天已签到」即为已领取（幂等，不会重复加分）。")
                 return EXIT_OK
             if res.kind == "auth_error":
                 LOG.error("access_token 无效或已过期")
