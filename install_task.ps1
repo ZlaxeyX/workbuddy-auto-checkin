@@ -192,7 +192,10 @@ function New-CheckinTask {
             -Property @{
                 Interval           = ("PT{0}M" -f $RepMinutes)
                 Duration           = ("PT{0}H" -f $RepHours)
-                StopAtDurationEnd  = $false
+                # 必须是 $true：为 $false 时"持续时间结束后仍继续重复"，
+                # 会导致 12:00+12h 之后的凌晨时段也在跑（实测踩过）。$true 才能
+                # 把重复窗口严格限制在 [主签到时间, 主签到时间+持续时长] 内。
+                StopAtDurationEnd  = $true
             }
     }
 
