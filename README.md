@@ -10,17 +10,47 @@
 
 纯 Python 标准库实现，**零第三方依赖**；配套 Windows 计划任务注册脚本，装一次长期生效。
 
-- 无依赖：只用 `urllib` / `json` / `ctypes` / `winreg` / `subprocess`
-- 不碰密码：默认模式完全复用桌面端已登录态，脚本不读取、不解密、不保存任何凭据
-- 不怕重跑：三层幂等保护，补签任务不会重复领积分
-- 可核验：从客户端日志解析签到证据，成功/失败都有明确退出码
-
 <p align="center">
   <img src="docs/demo.png" alt="checkin.py --discover 的环境体检输出" width="700">
 </p>
 
 > 图由 `python docs/make_demo.py` 从**真实的 `--discover` 输出**渲染而来（已强制脱敏）。
 > GitHub 不渲染 Markdown 里的 SVG，所以这里用 PNG。改过默认时间后重跑一次即可同步。
+
+## 30 秒跑起来
+
+```bash
+git clone https://github.com/ZlaxeyX/workbuddy-auto-checkin.git
+cd workbuddy-auto-checkin
+
+# 1) 环境自检（自动生成 config.json）
+python checkin.py --discover
+
+# 2) 关键一步：让 WorkBuddy 客户端保持登录并运行，然后提取登录态
+#    -> 写入 config.json，切换到全自动 token 模式（真正免点击）
+python extract_token.py
+
+# 3) 注册每日定时任务（默认每天 12:00）
+powershell -ExecutionPolicy Bypass -File install_task.ps1
+```
+
+就这些。之后每天自动领，想改时间：`python checkin.py --set-time 09:00`。
+
+<details>
+<summary><b>不跑 <code>extract_token.py</code> 会怎样？</b></summary>
+
+会走 <code>client</code> 模式：脚本能保证客户端上线并核验结果，但**领取动作仍需你点一次签到气泡**
+（逆向 <code>app.asar</code> 确认客户端的 <code>handleClaim</code> 只绑定点击）。
+所以想彻底无人值守，第 2 步别省。
+</details>
+
+**特点**
+
+- 无依赖：只用 `urllib` / `json` / `ctypes` / `winreg` / `subprocess`，克隆即可跑
+- 双模式：`token` 直连官方接口（全自动）/ `client` 复用客户端登录态（兜底）
+- 不怕重跑：三层幂等保护，补签任务不会重复领积分
+- 断网韧性：当天内每 30 分钟重试，网络恢复后自动补领
+- 可核验：从客户端日志解析签到证据，成功/失败都有明确退出码
 
 ---
 
@@ -132,6 +162,8 @@ token 模式                 client 模式
 ---
 
 ## 安装
+
+> 上面「30 秒跑起来」是精简版，这里给出每一步的说明和验收标准。
 
 ### 1. 克隆仓库
 
