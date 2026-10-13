@@ -15,7 +15,12 @@
 - 不怕重跑：三层幂等保护，补签任务不会重复领积分
 - 可核验：从客户端日志解析签到证据，成功/失败都有明确退出码
 
-<img src="docs/demo.svg" alt="checkin.py --discover 的环境体检输出" width="760">
+<p align="center">
+  <img src="docs/demo.png" alt="checkin.py --discover 的环境体检输出" width="700">
+</p>
+
+> 图由 `python docs/make_demo.py` 从**真实的 `--discover` 输出**渲染而来（已强制脱敏）。
+> GitHub 不渲染 Markdown 里的 SVG，所以这里用 PNG。改过默认时间后重跑一次即可同步。
 
 ---
 
