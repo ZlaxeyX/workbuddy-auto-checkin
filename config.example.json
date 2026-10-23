@@ -53,7 +53,7 @@
     "task_prefix": "WorkBuddy每日积分",
     "auto_sync": true,
     "repeat_minutes": 30,
-    "repeat_hours": 12
+    "repeat_hours": 11
   },
 
   "retry": {

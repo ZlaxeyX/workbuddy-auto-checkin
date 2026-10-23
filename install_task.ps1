@@ -70,10 +70,10 @@ if ($RepeatMinutes -lt 0) {
 }
 if ($RepeatHours -lt 0) {
     if ($CfgSchedule -and $null -ne $CfgSchedule.repeat_hours) { $RepeatHours = [int]$CfgSchedule.repeat_hours }
-    else { $RepeatHours = 12 }
+    else { $RepeatHours = 11 }
 }
 if ($RepeatMinutes -lt 5 -or $RepeatMinutes -gt 720) { $RepeatMinutes = 0 }   # 越界即关闭重复
-if ($RepeatHours -lt 1 -or $RepeatHours -gt 23) { $RepeatHours = 12 }
+if ($RepeatHours -lt 1 -or $RepeatHours -gt 23) { $RepeatHours = 11 }
 
 function Write-Step($msg) { Write-Host "  $msg" }
 function Fail($msg) { Write-Host "  [×] $msg" -ForegroundColor Red; exit 1 }
@@ -172,7 +172,7 @@ function New-CheckinTask {
 
     $action = New-ScheduledTaskAction `
         -Execute $runner `
-        -Argument ('"{0}" --mode auto --config "{1}"' -f $MainPy, (Join-Path $ScriptDir "config.json")) `
+        -Argument ('"{0}" --mode auto --scheduled --config "{1}"' -f $MainPy, (Join-Path $ScriptDir "config.json")) `
         -WorkingDirectory $ScriptDir
 
     $trigger = New-ScheduledTaskTrigger -Daily -At $at

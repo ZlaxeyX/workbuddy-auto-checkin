@@ -107,8 +107,10 @@ DEFAULT_CONFIG_DATA: Dict[str, Any] = {
         "task_prefix": "WorkBuddy每日积分",
         "auto_sync": True,
         # 断网韧性：主签到在当天内按间隔重复触发，网络恢复后自动补领（脚本幂等）
+        # repeat_hours 不能取 12：12:00+12h=24:00 会跨到次日 00:00，
+        # 那次触发会把「新一天」的积分提前领掉（实测踩过）。
         "repeat_minutes": 30,
-        "repeat_hours": 12,
+        "repeat_hours": 11,
     },
     "retry": {
         "max_attempts": 3,
@@ -1102,6 +1104,28 @@ class Runner:
         if self.args.show_status:
             return self.show_status(mode)
 
+        # 计划任务在「当天领取时间」之前被唤醒时直接跳过。
+        # 典型场景：昨天 12:00 电脑关机，今天凌晨 2 点开机，StartWhenAvailable
+        # 补跑昨天的任务——此时已是新的一天，若照常执行会把今天的积分提前领掉，
+        # 之后每天都往前漂，用户看到的就是"凌晨就领了，不是设定的 12:00"。
+        if getattr(self.args, "scheduled", False) and not self.args.force:
+            try:
+                primary = parse_hhmm(schedule_cfg(self.cfg)["primary_time"])
+                ph, pm = (int(x) for x in primary.split(":"))
+            except (ValueError, KeyError):
+                ph = pm = None
+            if ph is not None:
+                now = now_local()
+                if (now.hour, now.minute) < (ph, pm):
+                    LOG.info("计划任务在 %s 触发，而今日领取时间是 %s，尚未到点，跳过。",
+                             now.strftime("%H:%M"), primary)
+                    LOG.info("（这是开机补跑导致的提前唤醒，不会影响 %s 的正常领取）", primary)
+                    self.jsonl.write({"event": "result", "mode": mode,
+                                      "result": "too_early",
+                                      "now": now.strftime("%H:%M"),
+                                      "primary_time": primary})
+                    return EXIT_OK
+
         if self.state.claimed_today() and not self.args.force:
             LOG.info("本地记录显示今日已领取（%s），跳过。需要强制执行请加 --force",
                      self.state.data.get("updated_at"))
@@ -1329,7 +1353,7 @@ def sync_scheduled_tasks(cfg: Dict[str, Any]) -> Tuple[bool, str]:
 
     # 断网韧性：把重复触发间隔传给注册脚本（0 表示关闭）
     rep_min = int(sch.get("repeat_minutes", 30) or 0)
-    rep_hour = int(sch.get("repeat_hours", 12) or 0)
+    rep_hour = int(sch.get("repeat_hours", 11) or 0)
     cmd += ["-RepeatMinutes", str(rep_min), "-RepeatHours", str(rep_hour)]
 
     LOG.info("同步计划任务: 主签到 %s%s", sch["primary_time"],
@@ -1603,7 +1627,7 @@ def run_discover(cfg: Dict[str, Any]) -> int:
     if rep_min >= 5:
         line("[OK]", "断网韧性",
              "主签到每 %s 分钟重试一次、持续 %s 小时；单次运行时网络窗口 %s"
-             % (rep_min, conf.get("repeat_hours", 12), _fmt_duration(net_min * 60)))
+             % (rep_min, conf.get("repeat_hours", 11), _fmt_duration(net_min * 60)))
     else:
         line("[--]", "断网韧性",
              "重复触发已关闭（schedule.repeat_minutes=%s），断网只能等补签任务" % rep_min)
@@ -1643,6 +1667,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--user-id", default="", help="临时指定 X-User-Id")
     p.add_argument("--force", action="store_true", help="忽略本地幂等记录，强制执行")
     p.add_argument("--dry-run", action="store_true", help="演练：不真正调用领取接口")
+    p.add_argument("--scheduled", action="store_true",
+                   help="由计划任务调用。若当前时间早于 schedule.primary_time 则跳过，"
+                        "避免开机补跑时把新一天的积分提前领掉")
     p.add_argument("--show-status", action="store_true", help="只查询今日签到状态")
     p.add_argument("--no-notify", action="store_true", help="本次不弹系统通知（只写提醒文件）")
     p.add_argument("--discover", action="store_true", help="自检运行环境并输出探测结果")

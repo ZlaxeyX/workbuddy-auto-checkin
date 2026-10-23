@@ -424,7 +424,7 @@ setx WB_USER_ID "你的accountUid"
 | `schedule.task_prefix` | `WorkBuddy每日积分` | 计划任务名前缀 |
 | `schedule.auto_sync` | `true` | `--set-time` 后是否立即同步计划任务 |
 | `schedule.repeat_minutes` | `30` | **断网韧性**：主签到当天重复间隔，`0`=关闭 |
-| `schedule.repeat_hours` | `12` | 重复持续小时数（从主签到时间起算） |
+| `schedule.repeat_hours` | `11` | 重复持续小时数。**不要设 12**：12:00+12h=24:00 会跨到次日 00:00，那次触发会把新一天的积分提前领掉 |
 | `retry.network_retry_minutes` | `5` | 单次运行时网络类失败的持续重试窗口，`0`=只用退避次数 |
 | `auth.access_token` | `""` | Bearer 令牌，留空即走 client 模式 |
 | `auth.user_id` | `""` | 请求头 `X-User-Id` |
@@ -575,7 +575,7 @@ state/
 | 层 | 机制 | 覆盖场景 |
 |---|---|---|
 | ① 单次运行内 | 网络类失败在 `retry.network_retry_minutes`（默认 5 分钟）窗口内持续重试 | 抖动、瞬间断流 |
-| ② 当天重复触发 | 主签到每 `schedule.repeat_minutes`（默认 30 分钟）跑一次，持续 `repeat_hours`（默认 12 小时） | 断网半小时~数小时 |
+| ② 当天重复触发 | 主签到每 `schedule.repeat_minutes`（默认 30 分钟）跑一次，持续 `repeat_hours`（默认 11 小时，到 23:00 结束，避免跨天） | 断网半小时~数小时 |
 | ③ 补签兜底 | 21:00 再跑一次 | 白天长时间断网 |
 
 三层都靠**幂等**兜底：已领取时脚本几毫秒就退出，重复执行不会重复加分。
