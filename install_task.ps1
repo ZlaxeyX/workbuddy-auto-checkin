@@ -27,6 +27,7 @@ param(
     [int]$RepeatMinutes  = -1,
     [int]$RepeatHours    = -1,
     [switch]$NoRetry,
+    [switch]$NoUnlockTrigger,
     [switch]$RunNow,
     [switch]$Remove
 )
@@ -74,6 +75,11 @@ if ($RepeatHours -lt 0) {
 }
 if ($RepeatMinutes -lt 5 -or $RepeatMinutes -gt 720) { $RepeatMinutes = 0 }   # 越界即关闭重复
 if ($RepeatHours -lt 1 -or $RepeatHours -gt 23) { $RepeatHours = 11 }
+
+# 解锁补领是否启用：命令行 -NoUnlockTrigger 优先，否则跟随 config.json（默认开）
+$UnlockOn = $true
+if ($CfgSchedule -and $CfgSchedule.unlock_trigger -eq $false) { $UnlockOn = $false }
+if ($PSBoundParameters.ContainsKey("NoUnlockTrigger") -and $NoUnlockTrigger) { $UnlockOn = $false }
 
 function Write-Step($msg) { Write-Host "  $msg" }
 function Fail($msg) { Write-Host "  [×] $msg" -ForegroundColor Red; exit 1 }
@@ -164,7 +170,8 @@ function New-CheckinTask {
         [string]$Time,
         [string]$Tag,
         [int]$RepMinutes = 0,
-        [int]$RepHours = 0
+        [int]$RepHours = 0,
+        [switch]$WithUnlock
     )
 
     $hh, $mm = $Time.Split(":")
@@ -207,6 +214,19 @@ function New-CheckinTask {
         -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
         -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10)
 
+    # 会话解锁触发器：电脑从睡眠/合盖唤醒并解锁时立即补一次。
+    # 起因：笔记本白天长期睡眠，12:00 的定时触发被 Windows 直接错过
+    # （实测 Missed=3，任务根本没执行），而 StartWhenAvailable 要等下次
+    # 真正醒来才有机会补。加这个触发器后，一解锁就补领。
+    # 脚本里的 --scheduled 会判断"当前时间是否已过 primary_time"，
+    # 未到点自动跳过，所以不会造成提前领取。
+    #
+    # 坑：New-CimInstance 造出的 MSFT_TaskSessionStateChangeTrigger 无法直接
+    # 传给 Register-ScheduledTask -Trigger，会报 PSTypeName 不匹配
+    # （要求 MSFT_TaskTrigger）。因此改为：先注册基础任务，再导出 XML
+    # 插入 SessionUnlock 节点，最后用 -Xml 重新注册。
+    $triggers = @($trigger)
+
     $principal = New-ScheduledTaskPrincipal `
         -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
         -LogonType Interactive `
@@ -215,11 +235,35 @@ function New-CheckinTask {
     Register-ScheduledTask `
         -TaskName $Name `
         -Action $action `
-        -Trigger $trigger `
+        -Trigger $triggers `
         -Settings $settings `
         -Principal $principal `
         -Description "WorkBuddy 每日积分自动领取（$Tag）。幂等：当天已领取会自动跳过。" `
         -Force | Out-Null
+
+    if ($WithUnlock) {
+        # 加「会话解锁」触发器：电脑从睡眠/合盖唤醒并解锁时立即补一次，
+        # 解决"12:00 时电脑在睡眠，定时触发被 Windows 直接错过"（实测 Missed=3）。
+        #
+        # 这段踩了三个坑，记下来免得重踩：
+        # 1) New-CimInstance 造 MSFT_TaskSessionStateChangeTrigger 传给 -Trigger
+        #    → PSTypeName 不匹配（要求 MSFT_TaskTrigger）
+        # 2) 往 XML 里写 <SessionStateChange> → "任务 XML 包含意外节点"
+        #    正确元素名是 <SessionStateChangeTrigger>
+        # 3) 不带 <UserId> → "拒绝访问"；必须显式写当前用户 SID
+        # 4) COM 的 RegisterTaskDefinition 修改既有任务 → E_ACCESSDENIED，走不通
+        # 另外顺序：它必须排在 CalendarTrigger 之前（插到 <Triggers> 开头）。
+        try {
+            $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+            $xmlText = Export-ScheduledTask -TaskName $Name
+            $unlockXml = '<SessionStateChangeTrigger><Enabled>true</Enabled><StateChange>SessionUnlock</StateChange><UserId>' + $sid + '</UserId></SessionStateChangeTrigger>'
+            $newXml = $xmlText -replace '<Triggers>', ('<Triggers>' + $unlockXml)
+            Register-ScheduledTask -TaskName $Name -Xml $newXml -Force | Out-Null
+            Write-Step "已附加「解锁时补领」触发器（SessionUnlock）"
+        } catch {
+            Write-Step "警告: 解锁触发器添加失败（$($_.Exception.Message)）"
+        }
+    }
 
     if ($RepMinutes -ge 5) {
         Write-Step "已注册: $Name  ->  每天 $Time 起，每 $RepMinutes 分钟重试一次，持续 $RepHours 小时（断网恢复后自动补领）"
@@ -266,9 +310,10 @@ function Save-ScheduleToConfig($primary, $retry, $retryOn, $explicit) {
 }
 
 $created = @()
-# 主签到带重复触发（断网韧性）；补签保持单次，作为当天最后的兜底
+# 主签到带重复触发（断网韧性）+ 解锁补领（应对睡眠错过 12:00）；补签保持单次，作为当天最后的兜底
 $created += New-CheckinTask -Name "$TaskPrefix-主签到" -Time $PrimaryTime -Tag "主签到" `
-    -RepMinutes $RepeatMinutes -RepHours $RepeatHours
+    -RepMinutes $RepeatMinutes -RepHours $RepeatHours `
+    -WithUnlock:($UnlockOn)
 if ($RetryOn) {
     $created += New-CheckinTask -Name "$TaskPrefix-补签" -Time $RetryTime -Tag "补签兜底"
 } else {

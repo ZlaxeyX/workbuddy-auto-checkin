@@ -45,7 +45,9 @@
       "它会写回本文件并自动同步 Windows 计划任务；也可手工改本文件后执行 python checkin.py --sync-task。",
       "retry_enabled=true 表示额外在 retry_time 跑一次补签兜底（脚本幂等，不会重复领）。",
       "repeat_minutes/repeat_hours = 断网韧性：主签到在当天内按间隔重复触发，",
-      "网络恢复后最多一个间隔就能自动补领（脚本幂等，已领取会瞬间跳过）。设 0 关闭。"
+      "网络恢复后最多一个间隔就能自动补领（脚本幂等，已领取会瞬间跳过）。设 0 关闭。",
+      "unlock_trigger = 电脑从睡眠唤醒并解锁时补领一次。笔记本白天长期睡眠时，",
+      "12:00 的定时触发会被 Windows 直接错过，靠这个触发器在解锁后补上。"
     ],
     "primary_time": "12:00",
     "retry_time": "21:00",
@@ -53,7 +55,8 @@
     "task_prefix": "WorkBuddy每日积分",
     "auto_sync": true,
     "repeat_minutes": 30,
-    "repeat_hours": 11
+    "repeat_hours": 11,
+    "unlock_trigger": true
   },
 
   "retry": {

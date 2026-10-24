@@ -1267,7 +1267,7 @@ def _task_definitions(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         path = os.path.join(TASK_XML_DIR, name)
         if not os.path.isfile(path):
             continue
-        info: Dict[str, Any] = {"name": name, "start": "", "enabled": True}
+        info: Dict[str, Any] = {"name": name, "start": "", "enabled": True, "unlock": False}
         try:
             with open(path, "r", encoding="utf-16", errors="replace") as fh:
                 xml = fh.read(20000)
@@ -1276,14 +1276,19 @@ def _task_definitions(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         m = re.search(r"<StartBoundary>([^<]+)</StartBoundary>", xml)
         if m:
-            # StartBoundary 以 UTC 存储，换算成本地时间展示
+            # StartBoundary 通常是 UTC（不带偏移），但也可能是 "2026-10-24T12:00:00+08:00"
+            # 这种已带时区的写法。直接 replace(tzinfo=utc) 会把后者算错 8 小时，
+            # 所以先判断是否已带 tzinfo。
             try:
-                utc = datetime.fromisoformat(m.group(1))
-                local = utc.replace(tzinfo=timezone.utc).astimezone()
-                info["start"] = local.strftime("%H:%M")
+                dt = datetime.fromisoformat(m.group(1))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                info["start"] = dt.astimezone().strftime("%H:%M")
             except ValueError:
                 info["start"] = m.group(1)
         info["enabled"] = "<Enabled>false</Enabled>" not in xml
+        # 是否挂了「会话解锁」触发器（睡眠唤醒后补领）
+        info["unlock"] = "SessionStateChangeTrigger" in xml
         out.append(info)
     return sorted(out, key=lambda x: x["name"])
 
@@ -1631,6 +1636,21 @@ def run_discover(cfg: Dict[str, Any]) -> int:
     else:
         line("[--]", "断网韧性",
              "重复触发已关闭（schedule.repeat_minutes=%s），断网只能等补签任务" % rep_min)
+
+    # 解锁补领：笔记本睡眠时 Windows 不执行计划任务，靠解锁触发器补
+    main_task = next((t for t in st["tasks"] if t["name"].endswith("主签到")), None)
+    want_unlock = bool(cfg.get("schedule", {}).get("unlock_trigger", True))
+    has_unlock = bool(main_task and main_task.get("unlock"))
+    if want_unlock and has_unlock:
+        line("[OK]", "解锁补领", "已启用：睡眠错过 12:00 后，一解锁就补领")
+    elif want_unlock and not has_unlock:
+        line("[!!]", "解锁补领",
+             "未启用 -> 执行 python checkin.py --sync-task 添加；否则睡眠期间会漏")
+        print("         %-14s %s" % ("说明", "Windows 睡眠时不执行计划任务，12:00 若在睡眠会直接错过"))
+    elif has_unlock:
+        line("[--]", "解锁补领", "触发器仍存在，但配置已关闭；执行 --sync-task 可移除")
+    else:
+        line("[--]", "解锁补领", "已关闭")
 
     print("")
     print("[7] 读写权限")
