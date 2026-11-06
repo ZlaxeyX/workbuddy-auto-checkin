@@ -4,7 +4,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 ![Python](https://img.shields.io/badge/python-3.9%2B-3776AB)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
-![Scheduled Task](https://img.shields.io/badge/默认-每天%2012%3A00-0F6E56)
+![Scheduled Task](https://img.shields.io/badge/默认-每天%2009%3A00-0F6E56)
 
 > 每天自动拿到 WorkBuddy「Buddy 加油站」的 **100 积分**（连签第 7 天额外 **+1000**），不用再惦记着手动点。
 
