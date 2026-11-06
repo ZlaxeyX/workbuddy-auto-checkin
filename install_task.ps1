@@ -50,7 +50,7 @@ if (-not $TaskPrefix) {
 }
 if (-not $PrimaryTime) {
     if ($CfgSchedule -and $CfgSchedule.primary_time) { $PrimaryTime = [string]$CfgSchedule.primary_time }
-    else { $PrimaryTime = "12:00" }
+    else { $PrimaryTime = "09:00" }
 }
 if (-not $RetryTime) {
     if ($CfgSchedule -and $CfgSchedule.retry_time) { $RetryTime = [string]$CfgSchedule.retry_time }
@@ -200,7 +200,7 @@ function New-CheckinTask {
                 Interval           = ("PT{0}M" -f $RepMinutes)
                 Duration           = ("PT{0}H" -f $RepHours)
                 # 必须是 $true：为 $false 时"持续时间结束后仍继续重复"，
-                # 会导致 12:00+12h 之后的凌晨时段也在跑（实测踩过）。$true 才能
+                # 会导致重复窗口结束后仍继续跑、甚至凌晨提前领掉新一天的积分（实测踩过）。$true 才能
                 # 把重复窗口严格限制在 [主签到时间, 主签到时间+持续时长] 内。
                 StopAtDurationEnd  = $true
             }
@@ -215,7 +215,7 @@ function New-CheckinTask {
         -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 10)
 
     # 会话解锁触发器：电脑从睡眠/合盖唤醒并解锁时立即补一次。
-    # 起因：笔记本白天长期睡眠，12:00 的定时触发被 Windows 直接错过
+    # 起因：笔记本白天长期睡眠，主签到时刻的定时触发被 Windows 直接错过
     # （实测 Missed=3，任务根本没执行），而 StartWhenAvailable 要等下次
     # 真正醒来才有机会补。加这个触发器后，一解锁就补领。
     # 脚本里的 --scheduled 会判断"当前时间是否已过 primary_time"，
@@ -243,7 +243,7 @@ function New-CheckinTask {
 
     if ($WithUnlock) {
         # 加「会话解锁」触发器：电脑从睡眠/合盖唤醒并解锁时立即补一次，
-        # 解决"12:00 时电脑在睡眠，定时触发被 Windows 直接错过"（实测 Missed=3）。
+        # 解决"主签到时刻电脑在睡眠，定时触发被 Windows 直接错过"（实测 Missed=3）。
         #
         # 这段踩了三个坑，记下来免得重踩：
         # 1) New-CimInstance 造 MSFT_TaskSessionStateChangeTrigger 传给 -Trigger
@@ -310,7 +310,7 @@ function Save-ScheduleToConfig($primary, $retry, $retryOn, $explicit) {
 }
 
 $created = @()
-# 主签到带重复触发（断网韧性）+ 解锁补领（应对睡眠错过 12:00）；补签保持单次，作为当天最后的兜底
+# 主签到带重复触发（断网韧性）+ 解锁补领（应对睡眠错过主签到时刻）；补签保持单次，作为当天最后的兜底
 $created += New-CheckinTask -Name "$TaskPrefix-主签到" -Time $PrimaryTime -Tag "主签到" `
     -RepMinutes $RepeatMinutes -RepHours $RepeatHours `
     -WithUnlock:($UnlockOn)

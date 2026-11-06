@@ -101,14 +101,14 @@ DEFAULT_CONFIG_DATA: Dict[str, Any] = {
         "log_tail_bytes": 8000000,
     },
     "schedule": {
-        "primary_time": "12:00",
+        "primary_time": "09:00",
         "retry_time": "21:00",
         "retry_enabled": True,
         "task_prefix": "WorkBuddy每日积分",
         "auto_sync": True,
         # 断网韧性：主签到在当天内按间隔重复触发，网络恢复后自动补领（脚本幂等）
-        # repeat_hours 不能取 12：12:00+12h=24:00 会跨到次日 00:00，
-        # 那次触发会把「新一天」的积分提前领掉（实测踩过）。
+        # repeat_hours 要保证「主签到时刻 + repeat_hours」不跨过 24:00，
+        # 否则末次触发会把「新一天」的积分提前领掉（实测踩过）。
         "repeat_minutes": 30,
         "repeat_hours": 11,
     },
@@ -1105,9 +1105,9 @@ class Runner:
             return self.show_status(mode)
 
         # 计划任务在「当天领取时间」之前被唤醒时直接跳过。
-        # 典型场景：昨天 12:00 电脑关机，今天凌晨 2 点开机，StartWhenAvailable
+        # 典型场景：昨天 09:00 电脑关机，今天凌晨 2 点开机，StartWhenAvailable
         # 补跑昨天的任务——此时已是新的一天，若照常执行会把今天的积分提前领掉，
-        # 之后每天都往前漂，用户看到的就是"凌晨就领了，不是设定的 12:00"。
+        # 之后每天都往前漂，用户看到的就是"凌晨就领了，不是设定的 09:00"。
         if getattr(self.args, "scheduled", False) and not self.args.force:
             try:
                 primary = parse_hhmm(schedule_cfg(self.cfg)["primary_time"])
@@ -1217,10 +1217,10 @@ def default_task_names(cfg: Dict[str, Any]) -> List[str]:
 
 
 def parse_hhmm(value: str) -> str:
-    """把 '10:00' / '9:5' / '10：00' 规范化为 'HH:MM'，非法则抛 ValueError。"""
+    """把 '09:00' / '9:5' / '09：00' 规范化为 'HH:MM'，非法则抛 ValueError。"""
     m = TIME_RE.match(value or "")
     if not m:
-        raise ValueError("时间格式应为 HH:MM（24 小时制），例如 10:00")
+        raise ValueError("时间格式应为 HH:MM（24 小时制），例如 09:00")
     hour, minute = int(m.group(1)), int(m.group(2))
     if not (0 <= hour <= 23):
         raise ValueError("小时需在 00-23 之间，收到 %s" % hour)
@@ -1276,7 +1276,7 @@ def _task_definitions(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         m = re.search(r"<StartBoundary>([^<]+)</StartBoundary>", xml)
         if m:
-            # StartBoundary 通常是 UTC（不带偏移），但也可能是 "2026-10-24T12:00:00+08:00"
+            # StartBoundary 通常是 UTC（不带偏移），但也可能是 "2026-10-24T09:00:00+08:00"
             # 这种已带时区的写法。直接 replace(tzinfo=utc) 会把后者算错 8 小时，
             # 所以先判断是否已带 tzinfo。
             try:
@@ -1642,11 +1642,11 @@ def run_discover(cfg: Dict[str, Any]) -> int:
     want_unlock = bool(cfg.get("schedule", {}).get("unlock_trigger", True))
     has_unlock = bool(main_task and main_task.get("unlock"))
     if want_unlock and has_unlock:
-        line("[OK]", "解锁补领", "已启用：睡眠错过 12:00 后，一解锁就补领")
+        line("[OK]", "解锁补领", "已启用：睡眠错过 %s 后，一解锁就补领" % conf["primary_time"])
     elif want_unlock and not has_unlock:
         line("[!!]", "解锁补领",
              "未启用 -> 执行 python checkin.py --sync-task 添加；否则睡眠期间会漏")
-        print("         %-14s %s" % ("说明", "Windows 睡眠时不执行计划任务，12:00 若在睡眠会直接错过"))
+        print("         %-14s %s" % ("说明", "Windows 睡眠时不执行计划任务，%s 若在睡眠会直接错过" % conf["primary_time"]))
     elif has_unlock:
         line("[--]", "解锁补领", "触发器仍存在，但配置已关闭；执行 --sync-task 可移除")
     else:
@@ -1695,7 +1695,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--discover", action="store_true", help="自检运行环境并输出探测结果")
     p.add_argument("--verbose", action="store_true", help="输出 DEBUG 日志")
 
-    sch = p.add_argument_group("定时设置", "修改每日自动领取时间（默认每天 10:00）")
+    sch = p.add_argument_group("定时设置", "修改每日自动领取时间（默认每天 09:00）")
     sch.add_argument("--show-schedule", action="store_true",
                      help="查看当前定时设置，并检查计划任务是否与配置一致")
     sch.add_argument("--set-time", metavar="HH:MM",

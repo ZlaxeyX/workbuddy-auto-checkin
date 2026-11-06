@@ -30,7 +30,7 @@ python checkin.py --discover
 #    -> 写入 config.json，切换到全自动 token 模式（真正免点击）
 python extract_token.py
 
-# 3) 注册每日定时任务（默认每天 12:00）
+# 3) 注册每日定时任务（默认每天 09:00）
 powershell -ExecutionPolicy Bypass -File install_task.ps1
 ```
 
@@ -78,7 +78,7 @@ powershell -ExecutionPolicy Bypass -File install_task.ps1
 
 WorkBuddy 桌面端每天可以签到领 100 积分，连续 7 天额外奖励 1000 积分。问题在于**必须坚持**——漏一天，连签天数清零，那 1000 分奖励就作废了。
 
-本项目把这件事交给机器：**默认每天中午 12:00 自动领取**（时间可自定义），核验签到结果、失败时提醒你。可选的 `token` 模式还能完全绕过界面，直接调用官方签到接口。
+本项目把这件事交给机器：**默认每天早上 09:00 自动领取**（时间可自定义），核验签到结果、失败时提醒你。可选的 `token` 模式还能完全绕过界面，直接调用官方签到接口。
 
 改时间只需一条命令：
 
@@ -100,7 +100,7 @@ python checkin.py --set-time 08:30    # 改成每天 08:30
 ## 功能特性
 
 - **双模式自动切换**：`auto` 模式有 token 走接口，没有就走客户端兜底，永不空手
-- **每日定时**：注册两条 Windows 计划任务（默认 **每天 12:00** 主签到 + 21:00 补签），时间可自定义
+- **每日定时**：注册两条 Windows 计划任务（默认 **每天 09:00** 主签到 + 21:00 补签），时间可自定义
 - **错过补跑**：任务开启 `StartWhenAvailable`，当时关机也会在下次开机后自动补执行
 - **日志核验**：解析客户端 `main.log` 的 `[Checkin]` 记录，用真实证据判定成败，不靠猜
 - **智能重试**：只对可恢复错误（超时 / 429 / 5xx）做指数退避重试，退避带抖动
@@ -115,7 +115,7 @@ python checkin.py --set-time 08:30    # 改成每天 08:30
 ## 工作原理
 
 ```
-计划任务触发 (默认 12:00 / 21:00)
+计划任务触发 (默认 09:00 / 21:00)
         │
         ▼
 读取配置 + 检查本地幂等状态 ──已领取──▶ 直接退出
@@ -197,7 +197,7 @@ powershell -ExecutionPolicy Bypass -File install_task.ps1
 看到两条任务 `Ready` 即完成：
 
 ```
-WorkBuddy每日积分-主签到  ->  每天 12:00
+WorkBuddy每日积分-主签到  ->  每天 09:00
 WorkBuddy每日积分-补签    ->  每天 21:00
 ```
 
@@ -271,13 +271,13 @@ powershell -ExecutionPolicy Bypass -File install_task.ps1 -Remove
 
 ## 修改自动领取时间
 
-**默认每天 12:00 自动领取**，补签兜底在 21:00。时间完全可自定义。
+**默认每天 09:00 自动领取**，补签兜底在 21:00。时间完全可自定义。
 
 ### 推荐方式：一条命令
 
 ```bash
 python checkin.py --set-time 08:30              # 改成每天 08:30 领取
-python checkin.py --set-time 12:00 --set-retry-time 20:00
+python checkin.py --set-time 10:00 --set-retry-time 20:00
 python checkin.py --disable-retry               # 关掉 21:00 补签
 python checkin.py --enable-retry                # 再打开
 ```
@@ -298,7 +298,7 @@ python checkin.py --enable-retry                # 再打开
 
 ```json
 "schedule": {
-  "primary_time": "12:00",     // 主领取时间，默认每天 12:00
+  "primary_time": "09:00",     // 主领取时间，默认每天 09:00
   "retry_time": "21:00",       // 补签时间
   "retry_enabled": true,       // 是否启用补签
   "task_prefix": "WorkBuddy每日积分",
@@ -328,11 +328,11 @@ python checkin.py --set-time 08:30
 
 ```
 当前定时设置
-  主签到      config.json: 12:00
+  主签到      config.json: 09:00
   计划任务:
-    WorkBuddy每日积分-主签到      每天 09:00
+    WorkBuddy每日积分-主签到      每天 10:30
   ⚠ 配置与计划任务不一致：
-    - 主签到：配置为 12:00，但计划任务仍为 09:00
+    - 主签到：配置为 09:00，但计划任务仍为 10:30
   执行 python checkin.py --sync-task 可一键对齐
 ```
 
@@ -418,14 +418,14 @@ setx WB_USER_ID "你的accountUid"
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `auto` | `auto` / `token` / `client` |
-| `schedule.primary_time` | `12:00` | **每日自动领取时间，默认每天 12:00** |
+| `schedule.primary_time` | `09:00` | **每日自动领取时间，默认每天 09:00** |
 | `schedule.retry_time` | `21:00` | 补签时间 |
 | `schedule.retry_enabled` | `true` | 是否启用补签任务 |
 | `schedule.task_prefix` | `WorkBuddy每日积分` | 计划任务名前缀 |
 | `schedule.auto_sync` | `true` | `--set-time` 后是否立即同步计划任务 |
 | `schedule.repeat_minutes` | `30` | **断网韧性**：主签到当天重复间隔，`0`=关闭 |
-| `schedule.repeat_hours` | `11` | 重复持续小时数。**不要设 12**：12:00+12h=24:00 会跨到次日 00:00，那次触发会把新一天的积分提前领掉 |
-| `schedule.unlock_trigger` | `true` | 电脑从睡眠唤醒并**解锁时补领一次**。笔记本白天长期睡眠会让 12:00 的定时触发被 Windows 直接错过，靠它在解锁后补上 |
+| `schedule.repeat_hours` | `11` | 重复持续小时数。**不要设太大**：主签到时刻 + `repeat_hours` 若跨过 24:00，末次触发会把新一天的积分提前领掉 |
+| `schedule.unlock_trigger` | `true` | 电脑从睡眠唤醒并**解锁时补领一次**。笔记本白天长期睡眠会让 09:00 的定时触发被 Windows 直接错过，靠它在解锁后补上 |
 | `retry.network_retry_minutes` | `5` | 单次运行时网络类失败的持续重试窗口，`0`=只用退避次数 |
 | `auth.access_token` | `""` | Bearer 令牌，留空即走 client 模式 |
 | `auth.user_id` | `""` | 请求头 `X-User-Id` |
@@ -563,7 +563,7 @@ state/
 
 ## 常见问题
 
-**Q：为什么中午 12:00 有时没领到？**
+**Q：为什么早上 09:00 有时没领到？**
 看 `logs/checkin-*.log`。若退出码是 2，说明客户端没有自动签到（签到气泡需要一次点击）——把 `access_token` 填上即可彻底免点击。
 
 **Q：会重复领取 / 领两次吗？**
@@ -576,7 +576,7 @@ state/
 | 层 | 机制 | 覆盖场景 |
 |---|---|---|
 | ① 单次运行内 | 网络类失败在 `retry.network_retry_minutes`（默认 5 分钟）窗口内持续重试 | 抖动、瞬间断流 |
-| ② 当天重复触发 | 主签到每 `schedule.repeat_minutes`（默认 30 分钟）跑一次，持续 `repeat_hours`（默认 11 小时，到 23:00 结束，避免跨天） | 断网半小时~数小时 |
+| ② 当天重复触发 | 主签到每 `schedule.repeat_minutes`（默认 30 分钟）跑一次，持续 `repeat_hours`（默认 11 小时，到 20:00 结束，避免跨天） | 断网半小时~数小时 |
 | ③ 补签兜底 | 21:00 再跑一次 | 白天长时间断网 |
 
 三层都靠**幂等**兜底：已领取时脚本几毫秒就退出，重复执行不会重复加分。
@@ -597,15 +597,15 @@ checkin-status 网络重试窗口内仍未恢复，放弃本次        ← 退�
 **Q：电脑睡眠（合盖休眠）时到点了，会领吗？**
 
 不会——**Windows 睡眠时压根不执行计划任务**，这不是脚本能控制的。实测日志：
-`Missed=3`，12:00 / 12:30 / 13:00 三次触发全部错过，任务一次都没启动。
+`Missed=3`，09:00 / 09:30 / 10:00 三次触发全部错过，任务一次都没启动。
 
 所以主签到额外挂了一个 **「会话解锁」触发器**：你唤醒并解锁电脑的那一刻，脚本立刻检查今天领没领，
 没领就补上。配合 `--scheduled` 的"未到点跳过"，不会造成提前领取。
 
 这意味着：
 
-- 12:00 电脑醒着 → 准点自动领
-- 12:00 电脑在睡 → **你一解锁就补领**，不用等到 21:00
+- 09:00 电脑醒着 → 准点自动领
+- 09:00 电脑在睡 → **你一解锁就补领**，不用等到 21:00
 - 一整天都没解锁 → 只能等 21:00 补签，或跨天漏签
 
 关闭方式：`config.json` 里 `schedule.unlock_trigger: false`，再 `python checkin.py --sync-task`。
@@ -616,7 +616,7 @@ checkin-status 网络重试窗口内仍未恢复，放弃本次        ← 退�
 **Q：计划任务没跑？**
 确认用户处于登录状态（注销后 `Interactive` 任务不会运行，锁屏可以）。用 `Get-ScheduledTask -TaskName 'WorkBuddy每日积分*'` 查看状态。
 
-**Q：怎么把自动领取时间从 12:00 改成别的时间？**
+**Q：怎么把自动领取时间从 09:00 改成别的时间？**
 `python checkin.py --set-time 08:30`。它会写回 `config.json` 并自动重新注册计划任务，一条命令搞定。详见[修改自动领取时间](#修改自动领取时间)。
 
 **Q：改了 `config.json` 要重装计划任务吗？**
